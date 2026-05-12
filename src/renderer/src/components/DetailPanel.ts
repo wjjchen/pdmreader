@@ -98,6 +98,7 @@ export class DetailPanel {
         <td class="selectable">${col.length || '-'}</td>
         <td>${col.nullable ? '<span class="badge badge-mandatory">NOT NULL</span>' : '<span class="badge badge-nullable">NULL</span>'}</td>
         <td>${col.identity ? '<span class="badge badge-identity">自增</span>' : ''}</td>
+        <td class="selectable">${this.escapeHtml(col.defaultValue || '')}</td>
         <td class="selectable">${this.escapeHtml(col.comment || '')}</td>
       </tr>
     `).join('');
@@ -126,8 +127,9 @@ export class DetailPanel {
               <th>代码</th>
               <th>数据类型</th>
               <th>长度</th>
-              <th>空值</th>
+              <th>可为空</th>
               <th>自增</th>
+              <th>默认值</th>
               <th>注释</th>
             </tr>
           </thead>
