@@ -14,9 +14,19 @@ export interface PDMColumn {
 
 export interface PDMKey {
   id: string;
+  shortId: string;
   name: string;
   code: string;
   type: 'primary' | 'foreign';
+  columnRefs: string[];
+}
+
+export interface PDMIndex {
+  id: string;
+  name: string;
+  code: string;
+  unique: boolean;
+  cluster: boolean;
   columnRefs: string[];
 }
 
@@ -28,6 +38,7 @@ export interface PDMTable {
   columns: PDMColumn[];
   primaryKey?: PDMKey;
   keys: PDMKey[];
+  indexes: PDMIndex[];
 }
 
 export interface TreeNodeData {
@@ -43,8 +54,14 @@ export interface TreeNodeData {
   keyData?: PDMKey;
 }
 
+import { generateCreateTableSQL, DBMSInfo } from '../utils/sql-generator';
+import { PDMReference, PDMTable as PDMTableFull } from '../../main/services/pdm-parser';
+
 export class DetailPanel {
   private container: HTMLElement;
+  private dbms: DBMSInfo | undefined;
+  private references: PDMReference[] = [];
+  private allTables: PDMTableFull[] = [];
 
   constructor(containerId: string) {
     const container = document.getElementById(containerId);
@@ -52,6 +69,15 @@ export class DetailPanel {
       throw new Error(`Container element not found: ${containerId}`);
     }
     this.container = container;
+  }
+
+  setDBMS(dbms?: DBMSInfo) {
+    this.dbms = dbms;
+  }
+
+  setReferences(references: PDMReference[], tables: PDMTableFull[]) {
+    this.references = references;
+    this.allTables = tables;
   }
 
   // 显示详情
@@ -156,7 +182,29 @@ export class DetailPanel {
         </div>
       </div>
       ` : ''}
+
+      <div class="detail-section">
+        <h3 class="detail-title" style="font-size: 14px; border-bottom-width: 1px; display: flex; align-items: center; justify-content: space-between;">
+          <span>创建语句</span>
+          <button class="btn-copy-sql" title="复制SQL">复制</button>
+        </h3>
+        <pre class="sql-block"><code>${this.escapeHtml(generateCreateTableSQL(table, this.dbms, this.references, this.allTables))}</code></pre>
+      </div>
     `;
+
+    // 绑定复制按钮事件
+    const copyBtn = this.container.querySelector('.btn-copy-sql');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', () => {
+        const sql = generateCreateTableSQL(table, this.dbms, this.references, this.allTables);
+        navigator.clipboard.writeText(sql).then(() => {
+          const btn = copyBtn as HTMLButtonElement;
+          const orig = btn.textContent;
+          btn.textContent = '已复制';
+          setTimeout(() => { btn.textContent = orig; }, 1500);
+        });
+      });
+    }
   }
 
   // 显示列详情
@@ -244,7 +292,7 @@ export class DetailPanel {
   // 获取列名列表
   private getColumnNames(table: PDMTable, columnRefs: string[]): string[] {
     return columnRefs.map(ref => {
-      const col = table.columns.find(c => c.id === ref);
+      const col = table.columns.find(c => c.id === ref || c.code === ref);
       return col ? col.code : ref;
     });
   }

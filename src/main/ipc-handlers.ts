@@ -68,6 +68,26 @@ export function registerIPCHandlers(_mainWindow: BrowserWindow) {
   ipcMain.handle('app:getCurrentFile', () => {
     return currentFilePath;
   });
+
+  // 保存SQL文件
+  ipcMain.handle('sql:save', async (_event, content: string) => {
+    const win = getMainWindow();
+    const { filePath } = await dialog.showSaveDialog(
+      win && !win.isDestroyed() ? win : undefined,
+      {
+        title: '导出SQL',
+        defaultPath: 'create_tables.sql',
+        filters: [
+          { name: 'SQL Files', extensions: ['sql'] },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      }
+    );
+
+    if (filePath) {
+      await fs.writeFile(filePath, content, 'utf-8');
+    }
+  });
 }
 
 export function createMenu(_mainWindow: BrowserWindow) {
@@ -98,6 +118,18 @@ export function createMenu(_mainWindow: BrowserWindow) {
             }
           }
         }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: '撤销', accelerator: 'CmdOrCtrl+Z' },
+        { role: 'redo', label: '重做', accelerator: 'CmdOrCtrl+Shift+Z' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切', accelerator: 'CmdOrCtrl+X' },
+        { role: 'copy', label: '复制', accelerator: 'CmdOrCtrl+C' },
+        { role: 'paste', label: '粘贴', accelerator: 'CmdOrCtrl+V' },
+        { role: 'selectAll', label: '全选', accelerator: 'CmdOrCtrl+A' }
       ]
     },
     {

@@ -5,6 +5,7 @@ export interface ElectronAPI {
   openFile: () => Promise<string | null>;
   parsePDM: (filePath?: string) => Promise<any>;
   getCurrentFile: () => Promise<string | null>;
+  saveSQL: (content: string) => Promise<void>;
   onFileOpened: (callback: (data: { filePath: string; fileName: string }) => void) => void;
   onMenuOpenFile: (callback: () => void) => void;
   onExpandAll: (callback: () => void) => void;
@@ -20,6 +21,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 获取当前文件路径
   getCurrentFile: () => ipcRenderer.invoke('app:getCurrentFile'),
+
+  // 保存SQL文件
+  saveSQL: (content: string) => ipcRenderer.invoke('sql:save', content),
 
   // 文件打开事件监听
   onFileOpened: (callback: (data: { filePath: string; fileName: string }) => void) => {

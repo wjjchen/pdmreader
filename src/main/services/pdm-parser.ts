@@ -15,6 +15,7 @@ export interface PDMColumn {
 
 export interface PDMKey {
   id: string;
+  shortId: string;
   name: string;
   code: string;
   type: 'primary' | 'foreign';
@@ -25,6 +26,15 @@ export interface PDMKey {
   };
 }
 
+export interface PDMIndex {
+  id: string;
+  name: string;
+  code: string;
+  unique: boolean;
+  cluster: boolean;
+  columnRefs: string[];
+}
+
 export interface PDMTable {
   id: string;
   name: string;
@@ -33,6 +43,7 @@ export interface PDMTable {
   columns: PDMColumn[];
   primaryKey?: PDMKey;
   keys: PDMKey[];
+  indexes: PDMIndex[];
 }
 
 export interface PDMReference {
@@ -75,6 +86,12 @@ export interface PDMDiagram {
   references: PDMReference[];
 }
 
+export interface PDMDBMS {
+  code: string;
+  name: string;
+  version?: string;
+}
+
 export interface PDMData {
   tables: PDMTable[];
   diagram?: PDMDiagram;
@@ -82,12 +99,14 @@ export interface PDMData {
   version?: string;
   author?: string;
   modelName?: string;
+  dbms?: PDMDBMS;
 }
 
 export class PDMParser {
   private parser: XMLParser;
-  private idMap: Map<string, string>; // 映射短格式ID (如"o12") -> 表GUID
+  private idMap: Map<string, string>; // 映射短格式ID (如"o12") -> GUID
   private columnMap: Map<string, { tableId: string; code: string }>; // 映射列短格式ID -> {tableId, code}
+  private tableMap: Map<string, string>; // 映射表短格式ID -> 表code
 
   constructor() {
     this.parser = new XMLParser({
@@ -102,6 +121,7 @@ export class PDMParser {
     });
     this.idMap = new Map();
     this.columnMap = new Map();
+    this.tableMap = new Map();
   }
 
   parse(xmlContent: string): PDMData {
@@ -122,8 +142,28 @@ export class PDMParser {
       references,
       version: modelNode['@_Version'] || modelNode['Version'],
       author: modelNode['Author'] || modelNode['@_Author'],
-      modelName: modelNode['a:Name'] || modelNode['Name']
+      modelName: modelNode['a:Name'] || modelNode['Name'],
+      dbms: this.parseDBMS(modelNode)
     };
+  }
+
+  private parseDBMS(modelNode: any): PDMDBMS | undefined {
+    const dbmsNode = modelNode['c:DBMS'] || modelNode['a:DBMS'] || modelNode['DBMS'];
+    if (!dbmsNode) return undefined;
+
+    let code = '';
+    let name = '';
+    let version = '';
+
+    if (typeof dbmsNode === 'object') {
+      const dbmsRef = dbmsNode['o:DBMS'] || dbmsNode['DBMS'] || dbmsNode;
+      code = dbmsRef['a:Code'] || dbmsRef['@_Code'] || dbmsRef['Code'] || dbmsRef['@_Ref'] || '';
+      name = dbmsRef['a:Name'] || dbmsRef['@_Name'] || dbmsRef['Name'] || '';
+      version = dbmsRef['a:Version'] || dbmsRef['@_Version'] || dbmsRef['Version'] || '';
+    }
+
+    if (!code && !name) return undefined;
+    return { code, name, version: version || undefined };
   }
 
   private findModelNode(obj: any): any {
@@ -204,11 +244,20 @@ export class PDMParser {
     const code = tableXml['a:Code'] || tableXml['@_Code'] || tableXml['Code'] || '';
     const comment = tableXml['a:Comment'] || tableXml['@_Comment'] || tableXml['Comment'] || '';
 
+    // 映射表短ID到表code
+    const shortId = tableXml['@_Id'] || '';
+    if (shortId && code) {
+      this.tableMap.set(shortId, code);
+    }
+
     const columns = this.parseColumns(tableXml, id);
     const keys = this.parseKeys(tableXml, columns);
     const primaryKey = this.findPrimaryKey(tableXml, keys, columns);
+    const indexes = this.parseIndexes(tableXml, columns);
 
-    return { id, name, code, comment, columns, primaryKey, keys };
+    return { id, name, code, comment, columns, primaryKey, keys, indexes };
+
+    return { id, name, code, comment, columns, primaryKey, keys, indexes };
   }
 
   private parseColumns(tableXml: any, tableId: string): PDMColumn[] {
@@ -255,6 +304,7 @@ export class PDMParser {
 
   private parseKey(keyXml: any, columns: PDMColumn[]): PDMKey {
     const id = keyXml['a:ObjectID'] || keyXml['@_ObjectID'] || keyXml['ObjectID'] || '';
+    const shortId = keyXml['@_Id'] || '';
     const name = keyXml['a:Name'] || keyXml['@_Name'] || keyXml['Name'] || '';
     const code = keyXml['a:Code'] || keyXml['@_Code'] || keyXml['Code'] || '';
     const keyType = this.isForeignKey(keyXml) ? 'foreign' : 'primary';
@@ -262,7 +312,6 @@ export class PDMParser {
 
     let foreignKeyInfo = undefined;
     if (keyType === 'foreign') {
-      // 尝试提取外键引用的父表和父键信息
       const parentTableId = this.extractForeignKeyParentTableId(keyXml);
       const parentKeyId = this.extractForeignKeyParentKeyId(keyXml);
       
@@ -271,7 +320,7 @@ export class PDMParser {
       }
     }
 
-    return { id, name, code, type: keyType, columnRefs, foreignKeyInfo };
+    return { id, shortId, name, code, type: keyType, columnRefs, foreignKeyInfo };
   }
 
   private isForeignKey(keyXml: any): boolean {
@@ -322,15 +371,27 @@ export class PDMParser {
 
     if (!keyColumns) return [];
 
-    const refs = Array.isArray(keyColumns) ? keyColumns : [keyColumns];
+    const colObjects = this.extractObjects(keyColumns, 'Column');
+    const resolvedCodes: string[] = [];
 
-    return refs.map((ref: any) => {
-      if (typeof ref === 'string') return ref;
-      if (typeof ref === 'object') {
-        return ref['@_Ref'] || ref['Ref'] || ref['a:ObjectID'] || ref['@_ObjectID'] || ref['ObjectID'] || '';
+    for (const colRef of colObjects) {
+      const shortId = colRef['@_Ref'] || colRef['Ref'] || '';
+      // 先通过columnMap解析短ID为列code
+      if (shortId && this.columnMap.has(shortId)) {
+        resolvedCodes.push(this.columnMap.get(shortId)!.code);
+      } else {
+        // 再尝试匹配列的GUID
+        const guid = colRef['a:ObjectID'] || colRef['@_ObjectID'] || colRef['ObjectID'] || '';
+        const col = columns.find(c => c.id === guid || c.id === shortId);
+        if (col) {
+          resolvedCodes.push(col.code);
+        } else if (shortId || guid) {
+          resolvedCodes.push(shortId || guid);
+        }
       }
-      return '';
-    }).filter(Boolean);
+    }
+
+    return resolvedCodes;
   }
 
   private findPrimaryKey(tableXml: any, keys: PDMKey[], columns: PDMColumn[]): PDMKey | undefined {
@@ -343,11 +404,72 @@ export class PDMParser {
 
       if (pkRef) {
         const pkId = typeof pkRef === 'string' ? pkRef : (pkRef['@_Ref'] || pkRef['Ref'] || pkRef['a:ObjectID'] || pkRef['@_ObjectID'] || pkRef['ObjectID'] || '');
-        return keys.find(k => k.id === pkId);
+        // 先按Key的id(GUID)匹配
+        let pk = keys.find(k => k.id === pkId);
+        if (pk) return pk;
+        // 再按Key的短ID(@_Id)匹配 — PDM中PrimaryKey引用的是短ID如o46
+        pk = keys.find(k => k.shortId === pkId);
+        if (pk) return pk;
       }
     }
 
     return keys.find(k => k.type === 'primary');
+  }
+
+  private parseIndexes(tableXml: any, columns: PDMColumn[]): PDMIndex[] {
+    const indexesCollection = tableXml['c:Indexes'] || tableXml['Indexes'];
+    if (!indexesCollection) return [];
+
+    const indexObjects = this.extractObjects(indexesCollection, 'Index');
+    return indexObjects.map((idx: any) => this.parseIndex(idx, columns)).filter((i): i is PDMIndex => i !== null);
+  }
+
+  private parseIndex(idxXml: any, columns: PDMColumn[]): PDMIndex | null {
+    const id = idxXml['a:ObjectID'] || idxXml['@_ObjectID'] || idxXml['ObjectID'] || '';
+    const name = idxXml['a:Name'] || idxXml['@_Name'] || idxXml['Name'] || '';
+    const code = idxXml['a:Code'] || idxXml['@_Code'] || idxXml['Code'] || '';
+
+    const unique = !!(idxXml['a:Unique'] === '1' || idxXml['@_Unique'] === '1' || idxXml['Unique'] === '1' || idxXml['Unique'] === true);
+    const cluster = !!(idxXml['a:Clustered'] === '1' || idxXml['@_Clustered'] === '1' || idxXml['Clustered'] === '1');
+
+    // 解析索引列
+    const columnRefs = this.getIndexColumnRefs(idxXml, columns);
+
+    return { id, name, code, unique, cluster, columnRefs };
+  }
+
+  private getIndexColumnRefs(idxXml: any, columns: PDMColumn[]): string[] {
+    const indexColumns = idxXml['c:IndexColumns'] || idxXml['IndexColumns'];
+    if (!indexColumns) return [];
+
+    const colObjects = this.extractObjects(indexColumns, 'IndexColumn');
+    const refs: string[] = [];
+
+    for (const ic of colObjects) {
+      // <c:Column><o:Column Ref="o123"/></c:Column>
+      const colWrapper = ic['c:Column'] || ic['Column'];
+      if (colWrapper) {
+        const colRef = colWrapper['o:Column'] || colWrapper['Column'] || colWrapper;
+        const colId = (typeof colRef === 'object')
+          ? colRef['@_Ref'] || colRef['Ref'] || colRef['a:ObjectID'] || colRef['@_ObjectID'] || ''
+          : (typeof colWrapper === 'string' ? colWrapper : '');
+        if (colId) {
+          // 通过columnMap映射短ID为列code
+          if (this.columnMap.has(colId)) {
+            refs.push(this.columnMap.get(colId)!.code);
+          } else {
+            const col = columns.find(c => c.id === colId);
+            if (col) {
+              refs.push(col.code);
+            } else {
+              refs.push(colId);
+            }
+          }
+        }
+      }
+    }
+
+    return refs;
   }
 
   private parseReferences(model: any): PDMReference[] {
@@ -411,7 +533,7 @@ export class PDMParser {
     if (!parentTableId || !childTableId) {
       const parentTableRef = refXml['c:ParentTableRef'] || refXml['ParentTableRef'] || refXml['a:ParentTableRef'];
       const childTableRef = refXml['c:ChildTableRef'] || refXml['ChildTableRef'] || refXml['a:ChildTableRef'];
-      
+
       if (parentTableRef) {
         if (typeof parentTableRef === 'string') {
           parentTableId = parentTableRef;
@@ -419,7 +541,7 @@ export class PDMParser {
           parentTableId = parentTableRef['@_Ref'] || parentTableRef['Ref'] || parentTableRef['a:ObjectID'] || parentTableRef['@_ObjectID'] || '';
         }
       }
-      
+
       if (childTableRef) {
         if (typeof childTableRef === 'string') {
           childTableId = childTableRef;
@@ -429,19 +551,18 @@ export class PDMParser {
       }
     }
 
-    // 如果仍然没有找到，尝试从外键名称推断（后备方案）
-    if (!parentTableId || !childTableId) {
-      // 如果找到的是短格式ID，尝试转换为对应的表GUID
-      if (this.idMap.has(parentTableId)) {
-        parentTableId = this.idMap.get(parentTableId)!;
-      }
-
-      if (this.idMap.has(childTableId)) {
-        childTableId = this.idMap.get(childTableId)!;
-      }
+    // 将短ID映射为表code
+    let parentTableCode = '';
+    let childTableCode = '';
+    if (this.tableMap.has(parentTableId)) {
+      parentTableCode = this.tableMap.get(parentTableId)!;
+    }
+    if (this.tableMap.has(childTableId)) {
+      childTableCode = this.tableMap.get(childTableId)!;
     }
 
     // 提取Joins中的列关联信息
+    // PDM中: Object1 = 父表列(parent), Object2 = 子表列(child)
     let parentColumnCodes: string[] = [];
     let childColumnCodes: string[] = [];
 
@@ -449,21 +570,8 @@ export class PDMParser {
     if (joins) {
       const joinObjects = this.extractObjects(joins, 'ReferenceJoin');
       joinObjects.forEach((j: any) => {
-        // 提取子表列引用 (Object1 = child column)
-        const childCol = j['c:Object1'] || j['Object1'];
-        if (childCol) {
-          const colRef = childCol['o:Column'] || childCol['Column'] || childCol;
-          const colId = (typeof colRef === 'object')
-            ? colRef['@_Ref'] || colRef['Ref'] || colRef['a:ObjectID'] || colRef['@_ObjectID'] || ''
-            : (typeof childCol === 'string' ? childCol : '');
-          if (colId) {
-            // 通过columnMap解析为列code
-            const mapped = this.columnMap.get(colId);
-            childColumnCodes.push(mapped ? mapped.code : colId);
-          }
-        }
-        // 提取父表列引用 (Object2 = parent column)
-        const parentCol = j['c:Object2'] || j['Object2'];
+        // Object1 = 父表列(parent column)
+        const parentCol = j['c:Object1'] || j['Object1'];
         if (parentCol) {
           const colRef = parentCol['o:Column'] || parentCol['Column'] || parentCol;
           const colId = (typeof colRef === 'object')
@@ -474,10 +582,22 @@ export class PDMParser {
             parentColumnCodes.push(mapped ? mapped.code : colId);
           }
         }
+        // Object2 = 子表列(child column)
+        const childCol = j['c:Object2'] || j['Object2'];
+        if (childCol) {
+          const colRef = childCol['o:Column'] || childCol['Column'] || childCol;
+          const colId = (typeof colRef === 'object')
+            ? colRef['@_Ref'] || colRef['Ref'] || colRef['a:ObjectID'] || colRef['@_ObjectID'] || ''
+            : (typeof childCol === 'string' ? childCol : '');
+          if (colId) {
+            const mapped = this.columnMap.get(colId);
+            childColumnCodes.push(mapped ? mapped.code : colId);
+          }
+        }
       });
     }
 
-    return { id, name, code, parentTableId, childTableId, parentColumnCodes, childColumnCodes };
+    return { id, name, code, parentTableId, childTableId, parentTableCode, childTableCode, parentColumnCodes, childColumnCodes };
   }
 
   private parseDiagram(model: any, tables: PDMTable[], references: PDMReference[]): PDMDiagram | undefined {

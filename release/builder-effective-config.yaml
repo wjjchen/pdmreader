@@ -1,0 +1,26 @@
+directories:
+  output: release
+  buildResources: resources
+appId: com.pdmreader.app
+productName: PDM Reader
+files:
+  - filter:
+      - dist/**/*
+      - package.json
+win:
+  target:
+    - nsis
+  icon: resources/icon.png
+mac:
+  target:
+    - dmg
+  icon: resources/icon.png
+  category: public.app-category.developer-tools
+linux:
+  target:
+    - AppImage
+  icon: resources/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+electronVersion: 28.3.3

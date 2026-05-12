@@ -1,6 +1,7 @@
 import { TreeView, TreeNodeData } from './components/TreeView';
 import { DetailPanel, PDMTable, PDMColumn, PDMKey } from './components/DetailPanel';
 import { ERDiagram, PDMReference } from './components/ERDiagram';
+import { generateAllTablesSQL } from './utils/sql-generator';
 
 // 全局变量
 let treeView: TreeView;
@@ -78,6 +79,7 @@ function initEventListeners() {
   btnOpen?.addEventListener('click', openFile);
   btnExpand?.addEventListener('click', () => treeView.expandAll());
   btnCollapse?.addEventListener('click', () => treeView.collapseAll());
+  document.getElementById('btn-export-sql')?.addEventListener('click', exportSQL);
 
   // 标签页切换
   tabDetail?.addEventListener('click', () => switchTab('detail'));
@@ -176,9 +178,17 @@ async function loadPDM(filePath: string) {
     // 设置 ER 图数据（包含外键关系）
     erDiagram.setData(data.diagram, data.tables, data.references);
 
+    // 设置数据库类型信息和外键关系
+    detailPanel.setDBMS(data.dbms);
+    detailPanel.setReferences(data.references, data.tables);
+
     // 启用按钮
+    const btnExpand = document.getElementById('btn-expand') as HTMLButtonElement;
+    const btnCollapse = document.getElementById('btn-collapse') as HTMLButtonElement;
+    const btnExportSql = document.getElementById('btn-export-sql') as HTMLButtonElement;
     if (btnExpand) btnExpand.disabled = false;
     if (btnCollapse) btnCollapse.disabled = false;
+    if (btnExportSql) btnExportSql.disabled = false;
 
     updateStatus(`已加载 ${data.tables.length} 个表`);
   } catch (error) {
@@ -267,6 +277,20 @@ function updateStatus(text: string) {
   }
 }
 
+// 导出SQL
+async function exportSQL() {
+  if (!currentData || !window.electronAPI) return;
+
+  try {
+    const sql = generateAllTablesSQL(currentData.tables, currentData.dbms, currentData.references);
+    await window.electronAPI.saveSQL(sql);
+    updateStatus('SQL已导出');
+  } catch (error) {
+    console.error('Error exporting SQL:', error);
+    updateStatus(`导出失败: ${error}`);
+  }
+}
+
 // 类型声明
 declare global {
   interface Window {
@@ -274,6 +298,7 @@ declare global {
       openFile: () => Promise<string | null>;
       parsePDM: (filePath?: string) => Promise<any>;
       getCurrentFile: () => Promise<string | null>;
+      saveSQL: (content: string) => Promise<void>;
       onFileOpened: (callback: (data: { filePath: string; fileName: string }) => void) => void;
       onMenuOpenFile: (callback: () => void) => void;
       onExpandAll: (callback: () => void) => void;
