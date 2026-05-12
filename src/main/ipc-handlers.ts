@@ -4,13 +4,23 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 let currentFilePath: string | null = null;
+const parser = new PDMParser();
+let handlersRegistered = false;
+let menuCreated = false;
 
-export function registerIPCHandlers(mainWindow: BrowserWindow) {
-  const parser = new PDMParser();
+function getMainWindow(): BrowserWindow | null {
+  const windows = BrowserWindow.getAllWindows();
+  return windows.length > 0 ? windows[0] : null;
+}
+
+export function registerIPCHandlers(_mainWindow: BrowserWindow) {
+  if (handlersRegistered) return;
+  handlersRegistered = true;
 
   // 打开文件对话框
   ipcMain.handle('dialog:openFile', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, {
+    const win = getMainWindow();
+    const result = await dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, {
       filters: [
         { name: 'PDM Files', extensions: ['pdm', 'xml'] },
         { name: 'All Files', extensions: ['*'] }
@@ -39,10 +49,13 @@ export function registerIPCHandlers(mainWindow: BrowserWindow) {
       currentFilePath = targetPath;
 
       // 发送文件打开事件
-      mainWindow.webContents.send('file:opened', {
-        filePath: targetPath,
-        fileName: path.basename(targetPath)
-      });
+      const win = getMainWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('file:opened', {
+          filePath: targetPath,
+          fileName: path.basename(targetPath)
+        });
+      }
 
       return data;
     } catch (error) {
@@ -55,33 +68,11 @@ export function registerIPCHandlers(mainWindow: BrowserWindow) {
   ipcMain.handle('app:getCurrentFile', () => {
     return currentFilePath;
   });
-
-  // 调试：检查 PDM 文件中的 References 结构
-  ipcMain.handle('pdm:checkReferences', async (_event, filePath?: string): Promise<any> => {
-    const targetPath = filePath || currentFilePath;
-
-    if (!targetPath) {
-      return null;
-    }
-
-    try {
-      const content = await fs.readFile(targetPath, 'utf-8');
-      const result = parser.parse(content);
-
-      return {
-        referencesCount: result.references?.length || 0,
-        references: result.references || [],
-        hasDiagram: !!result.diagram,
-        diagramReferencesCount: result.diagram?.references?.length || 0
-      };
-    } catch (error) {
-      console.error('Error checking references:', error);
-      throw error;
-    }
-  });
 }
 
-export function createMenu(mainWindow: BrowserWindow) {
+export function createMenu(_mainWindow: BrowserWindow) {
+  if (menuCreated) return;
+  menuCreated = true;
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'File',
@@ -90,7 +81,10 @@ export function createMenu(mainWindow: BrowserWindow) {
           label: 'Open PDM File',
           accelerator: 'CmdOrCtrl+O',
           click: () => {
-            mainWindow.webContents.send('menu:openFile');
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('menu:openFile');
+            }
           }
         },
         { type: 'separator' },
@@ -98,7 +92,10 @@ export function createMenu(mainWindow: BrowserWindow) {
           label: 'Exit',
           accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Alt+F4',
           click: () => {
-            mainWindow.close();
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) {
+              win.close();
+            }
           }
         }
       ]
@@ -110,14 +107,20 @@ export function createMenu(mainWindow: BrowserWindow) {
           label: 'Expand All',
           accelerator: 'CmdOrCtrl+E',
           click: () => {
-            mainWindow.webContents.send('menu:expandAll');
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('menu:expandAll');
+            }
           }
         },
         {
           label: 'Collapse All',
           accelerator: 'CmdOrCtrl+Shift+E',
           click: () => {
-            mainWindow.webContents.send('menu:collapseAll');
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('menu:collapseAll');
+            }
           }
         },
         { type: 'separator' },
@@ -125,14 +128,20 @@ export function createMenu(mainWindow: BrowserWindow) {
           label: 'Reload',
           accelerator: 'CmdOrCtrl+R',
           click: () => {
-            mainWindow.reload();
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) {
+              win.reload();
+            }
           }
         },
         {
           label: 'Toggle DevTools',
           accelerator: 'F12',
           click: () => {
-            mainWindow.webContents.toggleDevTools();
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) {
+              win.webContents.toggleDevTools();
+            }
           }
         }
       ]
@@ -143,12 +152,15 @@ export function createMenu(mainWindow: BrowserWindow) {
         {
           label: 'About PDM Reader',
           click: () => {
-            dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: 'About PDM Reader',
-              message: 'PDM Reader v1.0.0',
-              detail: 'A cross-platform tool to view PowerDesigner PDM files.'
-            });
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) {
+              dialog.showMessageBox(win, {
+                type: 'info',
+                title: 'About PDM Reader',
+                message: 'PDM Reader v1.0.0',
+                detail: 'A cross-platform tool to view PowerDesigner PDM files.'
+              });
+            }
           }
         }
       ]
@@ -175,4 +187,10 @@ export function createMenu(mainWindow: BrowserWindow) {
 
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
+}
+
+// 重置状态（用于新窗口创建时）
+export function resetForNewWindow() {
+  // IPC handlers只需注册一次，不需要重置
+  // 菜单通过getMainWindow()动态获取当前窗口，不需要重置
 }

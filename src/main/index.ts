@@ -20,11 +20,9 @@ function createWindow(): BrowserWindow {
     show: false
   });
 
-  // 创建菜单
-  createMenu(mainWindow);
-
-  // 注册 IPC 处理器
+  // 注册 IPC 处理器和菜单（只需注册一次）
   registerIPCHandlers(mainWindow);
+  createMenu(mainWindow);
 
   // 窗口准备就绪后显示
   mainWindow.once('ready-to-show', () => {
