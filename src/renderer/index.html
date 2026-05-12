@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>PDM Reader - PowerDesigner 文件查看器</title>
+  <link rel="stylesheet" href="./assets/styles/main.css">
+</head>
+<body>
+  <div id="app">
+    <div class="toolbar">
+      <button id="btn-open" class="toolbar-btn">
+        <span class="icon">📂</span> 打开文件
+      </button>
+      <button id="btn-expand" class="toolbar-btn" disabled>
+        <span class="icon">⊞</span> 展开全部
+      </button>
+      <button id="btn-collapse" class="toolbar-btn" disabled>
+        <span class="icon">⊟</span> 折叠全部
+      </button>
+    </div>
+    <div class="main-content">
+      <div class="tree-panel">
+        <div id="tree-container" class="tree-container">
+          <div class="empty-state">
+            <p>未加载 PDM 文件</p>
+            <p class="hint">点击"打开文件"选择一个 PDM 文件</p>
+          </div>
+        </div>
+      </div>
+      <div class="detail-panel" id="detail-panel">
+        <div class="tabs">
+          <button id="tab-detail" class="tab-btn active">详情</button>
+          <button id="tab-er" class="tab-btn">ER 图</button>
+        </div>
+        <div id="detail-container" class="detail-container">
+          <div class="empty-state">
+            <p>从左侧树形结构中选择一项查看详情</p>
+          </div>
+        </div>
+        <div id="er-container" class="er-container" style="display: none;">
+          <canvas id="er-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="status-bar">
+      <span id="status-text">就绪</span>
+    </div>
+  </div>
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>
