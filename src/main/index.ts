@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, shell, Menu } from 'electron';
 import * as path from 'path';
 import { registerIPCHandlers, createMenu } from './ipc-handlers';
 
@@ -35,6 +35,18 @@ function createWindow(): BrowserWindow {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  // 添加右键菜单支持
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const menu = Menu.buildFromTemplate([
+      { role: 'copy', label: '复制' },
+      { role: 'selectAll', label: '全选' },
+      { type: 'separator' },
+      { role: 'cut', label: '剪切' },
+      { role: 'paste', label: '粘贴' }
+    ]);
+    menu.popup();
   });
 
   // 加载页面

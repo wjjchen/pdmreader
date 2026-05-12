@@ -9,7 +9,7 @@ export interface ElectronAPI {
   onMenuOpenFile: (callback: () => void) => void;
   onExpandAll: (callback: () => void) => void;
   onCollapseAll: (callback: () => void) => void;
-  parseDebug: () => Promise<any>;
+  checkReferences: () => Promise<any>;
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -40,6 +40,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('menu:collapseAll', () => callback());
   },
 
-  // 调试：返回原始解析结果
-  parseDebug: () => ipcRenderer.invoke('pdm:parseDebug')
+  // 检查 References
+  checkReferences: () => ipcRenderer.invoke('pdm:checkReferences')
 } as ElectronAPI);

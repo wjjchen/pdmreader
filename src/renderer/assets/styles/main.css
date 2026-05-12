@@ -2,6 +2,8 @@
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
 :root {
@@ -391,8 +393,8 @@ body {
 }
 
 /* 文字选择 - 允许在详情面板中选择文字 */
-#detail-container,
-#detail-container * {
+.detail-container,
+.detail-container * {
   user-select: text !important;
   -webkit-user-select: text !important;
 }

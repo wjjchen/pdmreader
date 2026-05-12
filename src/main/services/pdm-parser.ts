@@ -19,6 +19,10 @@ export interface PDMKey {
   code: string;
   type: 'primary' | 'foreign';
   columnRefs: string[];
+  foreignKeyInfo?: {
+    parentTableId: string;
+    parentKeyId: string;
+  };
 }
 
 export interface PDMTable {
@@ -39,6 +43,8 @@ export interface PDMReference {
   childTableId: string;
   parentTableCode?: string;
   childTableCode?: string;
+  parentColumnCodes?: string[]; // 父表关联列的code列表
+  childColumnCodes?: string[];   // 子表关联列的code列表
 }
 
 export interface PDMTableSymbol {
@@ -72,6 +78,7 @@ export interface PDMDiagram {
 export interface PDMData {
   tables: PDMTable[];
   diagram?: PDMDiagram;
+  references: PDMReference[];
   version?: string;
   author?: string;
   modelName?: string;
@@ -79,6 +86,8 @@ export interface PDMData {
 
 export class PDMParser {
   private parser: XMLParser;
+  private idMap: Map<string, string>; // 映射短格式ID (如"o12") -> 表GUID
+  private columnMap: Map<string, { tableId: string; code: string }>; // 映射列短格式ID -> {tableId, code}
 
   constructor() {
     this.parser = new XMLParser({
@@ -88,9 +97,11 @@ export class PDMParser {
       parseAttributeValue: true,
       parseTagValue: true,
       trimValues: true,
-      processEntities: false,
-      entityExpansionLimit: 10000
+      processEntities: false
+      // entityExpansionLimit: 10000 // 这个属性在新版本中可能已被移除
     });
+    this.idMap = new Map();
+    this.columnMap = new Map();
   }
 
   parse(xmlContent: string): PDMData {
@@ -108,6 +119,7 @@ export class PDMParser {
     return {
       tables,
       diagram,
+      references,
       version: modelNode['@_Version'] || modelNode['Version'],
       author: modelNode['Author'] || modelNode['@_Author'],
       modelName: modelNode['a:Name'] || modelNode['Name']
@@ -153,9 +165,36 @@ export class PDMParser {
 
   private parseTables(model: any): PDMTable[] {
     const tablesCollection = model['c:Tables'] || model['Tables'];
-    if (!tablesCollection) return [];
+    if (!tablesCollection) {
+      return [];
+    }
 
     const tableObjects = this.extractObjects(tablesCollection, 'Table');
+
+    // 清除旧的映射表
+    this.idMap.clear();
+
+    // 建立ID映射
+    if (tableObjects.length > 0) {
+      const sampleTables = tableObjects.slice(0, Math.min(3, tableObjects.length));
+      sampleTables.forEach((t: any) => {
+        const tableId = t['a:ObjectID'] || t['@_ObjectID'] || t['ObjectID'] || '';
+        const tableShortId = t['@_Id'] || '';
+        if (tableShortId && tableId) {
+          this.idMap.set(tableShortId, tableId);
+        }
+      });
+
+      // 为所有表（不仅仅是样本）建立ID映射
+      tableObjects.forEach((t: any) => {
+        const tableId = t['a:ObjectID'] || t['@_ObjectID'] || t['ObjectID'] || '';
+        const tableShortId = t['@_Id'] || '';
+        if (tableShortId && tableId && !this.idMap.has(tableShortId)) {
+          this.idMap.set(tableShortId, tableId);
+        }
+      });
+    }
+
     return tableObjects.map((t: any) => this.parseTable(t));
   }
 
@@ -165,19 +204,30 @@ export class PDMParser {
     const code = tableXml['a:Code'] || tableXml['@_Code'] || tableXml['Code'] || '';
     const comment = tableXml['a:Comment'] || tableXml['@_Comment'] || tableXml['Comment'] || '';
 
-    const columns = this.parseColumns(tableXml);
+    const columns = this.parseColumns(tableXml, id);
     const keys = this.parseKeys(tableXml, columns);
     const primaryKey = this.findPrimaryKey(tableXml, keys, columns);
 
     return { id, name, code, comment, columns, primaryKey, keys };
   }
 
-  private parseColumns(tableXml: any): PDMColumn[] {
+  private parseColumns(tableXml: any, tableId: string): PDMColumn[] {
     const columnsCollection = tableXml['c:Columns'] || tableXml['Columns'];
     if (!columnsCollection) return [];
 
     const columnObjects = this.extractObjects(columnsCollection, 'Column');
-    return columnObjects.map((c: any) => this.parseColumn(c));
+    return columnObjects.map((c: any) => {
+      const col = this.parseColumn(c);
+      // 构建列短ID映射
+      const shortId = c['@_Id'] || '';
+      if (shortId && col.code) {
+        this.columnMap.set(shortId, { tableId, code: col.code });
+      }
+      if (col.id && col.code) {
+        this.columnMap.set(col.id, { tableId, code: col.code });
+      }
+      return col;
+    });
   }
 
   private parseColumn(columnXml: any): PDMColumn {
@@ -210,7 +260,18 @@ export class PDMParser {
     const keyType = this.isForeignKey(keyXml) ? 'foreign' : 'primary';
     const columnRefs = this.getKeyColumnRefs(keyXml, columns);
 
-    return { id, name, code, type: keyType, columnRefs };
+    let foreignKeyInfo = undefined;
+    if (keyType === 'foreign') {
+      // 尝试提取外键引用的父表和父键信息
+      const parentTableId = this.extractForeignKeyParentTableId(keyXml);
+      const parentKeyId = this.extractForeignKeyParentKeyId(keyXml);
+      
+      if (parentTableId) {
+        foreignKeyInfo = { parentTableId, parentKeyId };
+      }
+    }
+
+    return { id, name, code, type: keyType, columnRefs, foreignKeyInfo };
   }
 
   private isForeignKey(keyXml: any): boolean {
@@ -219,6 +280,39 @@ export class PDMParser {
       keyXml['ForeignKeySourceTable'] ||
       keyXml['c:ForeignKeySourceTable'] || keyXml['Reference']
     );
+  }
+
+  private extractForeignKeyParentTableId(keyXml: any): string {
+    // 尝试多种可能的XML结构
+    const fkSourceTable = keyXml['a:ForeignKeySourceTable'] || keyXml['@_ForeignKeySourceTable'] ||
+                         keyXml['ForeignKeySourceTable'] || keyXml['c:ForeignKeySourceTable'];
+    
+    if (fkSourceTable) {
+      if (typeof fkSourceTable === 'string') {
+        return fkSourceTable;
+      } else if (typeof fkSourceTable === 'object') {
+        return fkSourceTable['a:ObjectID'] || fkSourceTable['@_ObjectID'] || fkSourceTable['ObjectID'] ||
+               fkSourceTable['@_Ref'] || fkSourceTable['Ref'] || '';
+      }
+    }
+    
+    return '';
+  }
+
+  private extractForeignKeyParentKeyId(keyXml: any): string {
+    const fkSourceKey = keyXml['a:ForeignKeySourceKey'] || keyXml['@_ForeignKeySourceKey'] ||
+                       keyXml['ForeignKeySourceKey'] || keyXml['c:ForeignKeySourceKey'];
+    
+    if (fkSourceKey) {
+      if (typeof fkSourceKey === 'string') {
+        return fkSourceKey;
+      } else if (typeof fkSourceKey === 'object') {
+        return fkSourceKey['a:ObjectID'] || fkSourceKey['@_ObjectID'] || fkSourceKey['ObjectID'] ||
+               fkSourceKey['@_Ref'] || fkSourceKey['Ref'] || '';
+      }
+    }
+    
+    return '';
   }
 
   private getKeyColumnRefs(keyXml: any, columns: PDMColumn[]): string[] {
@@ -258,9 +352,12 @@ export class PDMParser {
 
   private parseReferences(model: any): PDMReference[] {
     const referencesCollection = model['c:References'] || model['References'];
-    if (!referencesCollection) return [];
+    if (!referencesCollection) {
+      return [];
+    }
 
     const referenceObjects = this.extractObjects(referencesCollection, 'Reference');
+
     return referenceObjects.map((r: any) => this.parseReference(r));
   }
 
@@ -269,27 +366,118 @@ export class PDMParser {
     const name = refXml['a:Name'] || refXml['@_Name'] || refXml['Name'] || '';
     const code = refXml['a:Code'] || refXml['@_Code'] || refXml['Code'] || '';
 
+    // 将reference的短ID加入idMap，以便referenceSymbol查找
+    const shortId = refXml['@_Id'] || '';
+    if (shortId && id) {
+      this.idMap.set(shortId, id);
+    }
+
     let parentTableId = '';
     let childTableId = '';
 
-    const parentTable = refXml['c:ParentTable'] || refXml['ParentTable'];
-    const childTable = refXml['c:ChildTable'] || refXml['ChildTable'];
+    // 方法1: 通过 c:ParentTable 和 c:ChildTable
+    const parentTable = refXml['c:ParentTable'] || refXml['ParentTable'] || refXml['a:ParentTable'] || refXml['@_ParentTable'];
+    const childTable = refXml['c:ChildTable'] || refXml['ChildTable'] || refXml['a:ChildTable'] || refXml['@_ChildTable'];
 
     if (parentTable) {
-      const tableRef = parentTable['o:Table'] || parentTable['Table'];
-      if (tableRef) {
-        parentTableId = tableRef['a:ObjectID'] || tableRef['@_ObjectID'] || tableRef['ObjectID'] || '';
+      const tableRef = parentTable['o:Table'] || parentTable['Table'] || parentTable;
+
+      if (tableRef && typeof tableRef === 'object') {
+        parentTableId = tableRef['a:ObjectID'] || tableRef['@_ObjectID'] || tableRef['ObjectID'] ||
+                       tableRef['@_Ref'] || tableRef['Ref'] || '';
+      } else if (typeof parentTable === 'string') {
+        parentTableId = parentTable;
       }
     }
 
     if (childTable) {
-      const tableRef = childTable['o:Table'] || childTable['Table'];
-      if (tableRef) {
-        childTableId = tableRef['a:ObjectID'] || tableRef['@_ObjectID'] || tableRef['ObjectID'] || '';
+      const tableRef = childTable['o:Table'] || childTable['Table'] || childTable;
+
+      if (tableRef && typeof tableRef === 'object') {
+        childTableId = tableRef['a:ObjectID'] || tableRef['@_ObjectID'] || tableRef['ObjectID'] ||
+                      tableRef['@_Ref'] || tableRef['Ref'] || '';
+      } else if (typeof childTable === 'string') {
+        childTableId = childTable;
       }
     }
 
-    return { id, name, code, parentTableId, childTableId };
+    // 方法2: 通过 @_ParentTable 和 @_ChildTable 属性
+    if (!parentTableId || !childTableId) {
+      parentTableId = refXml['@_ParentTable'] || parentTableId;
+      childTableId = refXml['@_ChildTable'] || childTableId;
+    }
+
+    // 方法3: 通过 ParentTableRef 和 ChildTableRef
+    if (!parentTableId || !childTableId) {
+      const parentTableRef = refXml['c:ParentTableRef'] || refXml['ParentTableRef'] || refXml['a:ParentTableRef'];
+      const childTableRef = refXml['c:ChildTableRef'] || refXml['ChildTableRef'] || refXml['a:ChildTableRef'];
+      
+      if (parentTableRef) {
+        if (typeof parentTableRef === 'string') {
+          parentTableId = parentTableRef;
+        } else if (typeof parentTableRef === 'object') {
+          parentTableId = parentTableRef['@_Ref'] || parentTableRef['Ref'] || parentTableRef['a:ObjectID'] || parentTableRef['@_ObjectID'] || '';
+        }
+      }
+      
+      if (childTableRef) {
+        if (typeof childTableRef === 'string') {
+          childTableId = childTableRef;
+        } else if (typeof childTableRef === 'object') {
+          childTableId = childTableRef['@_Ref'] || childTableRef['Ref'] || childTableRef['a:ObjectID'] || childTableRef['@_ObjectID'] || '';
+        }
+      }
+    }
+
+    // 如果仍然没有找到，尝试从外键名称推断（后备方案）
+    if (!parentTableId || !childTableId) {
+      // 如果找到的是短格式ID，尝试转换为对应的表GUID
+      if (this.idMap.has(parentTableId)) {
+        parentTableId = this.idMap.get(parentTableId)!;
+      }
+
+      if (this.idMap.has(childTableId)) {
+        childTableId = this.idMap.get(childTableId)!;
+      }
+    }
+
+    // 提取Joins中的列关联信息
+    let parentColumnCodes: string[] = [];
+    let childColumnCodes: string[] = [];
+
+    const joins = refXml['c:Joins'] || refXml['Joins'];
+    if (joins) {
+      const joinObjects = this.extractObjects(joins, 'ReferenceJoin');
+      joinObjects.forEach((j: any) => {
+        // 提取子表列引用 (Object1 = child column)
+        const childCol = j['c:Object1'] || j['Object1'];
+        if (childCol) {
+          const colRef = childCol['o:Column'] || childCol['Column'] || childCol;
+          const colId = (typeof colRef === 'object')
+            ? colRef['@_Ref'] || colRef['Ref'] || colRef['a:ObjectID'] || colRef['@_ObjectID'] || ''
+            : (typeof childCol === 'string' ? childCol : '');
+          if (colId) {
+            // 通过columnMap解析为列code
+            const mapped = this.columnMap.get(colId);
+            childColumnCodes.push(mapped ? mapped.code : colId);
+          }
+        }
+        // 提取父表列引用 (Object2 = parent column)
+        const parentCol = j['c:Object2'] || j['Object2'];
+        if (parentCol) {
+          const colRef = parentCol['o:Column'] || parentCol['Column'] || parentCol;
+          const colId = (typeof colRef === 'object')
+            ? colRef['@_Ref'] || colRef['Ref'] || colRef['a:ObjectID'] || colRef['@_ObjectID'] || ''
+            : (typeof parentCol === 'string' ? parentCol : '');
+          if (colId) {
+            const mapped = this.columnMap.get(colId);
+            parentColumnCodes.push(mapped ? mapped.code : colId);
+          }
+        }
+      });
+    }
+
+    return { id, name, code, parentTableId, childTableId, parentColumnCodes, childColumnCodes };
   }
 
   private parseDiagram(model: any, tables: PDMTable[], references: PDMReference[]): PDMDiagram | undefined {
@@ -318,7 +506,9 @@ export class PDMParser {
       const refSymbolObjects = this.extractObjects(symbolsCollection, 'ReferenceSymbol');
       refSymbolObjects.forEach((rs: any) => {
         const symbol = this.parseReferenceSymbol(rs);
-        if (symbol) referenceSymbols.push(symbol);
+        if (symbol) {
+          referenceSymbols.push(symbol);
+        }
       });
     }
 
@@ -339,65 +529,297 @@ export class PDMParser {
   }
 
   private parseTableSymbol(tsXml: any): PDMTableSymbol | null {
-    const id = tsXml['a:ObjectID'] || tsXml['@_ObjectID'] || tsXml['ObjectID'] || '';
+    // 尝试所有可能的ID字段
+    const id = tsXml['a:ObjectID'] || tsXml['@_ObjectID'] || tsXml['ObjectID'] || tsXml['@_Id'] || '';
 
-    const sourceBlock = tsXml['a:SourceBlockID'] || tsXml['SourceBlockID'];
+    // 尝试从 c:Object 字段获取关联的表对象ID
     let objectId = '';
+    const objRef = tsXml['c:Object'] || tsXml['Object'] || tsXml['a:Object'] || tsXml['@_Object'];
 
-    if (sourceBlock) {
-      objectId = sourceBlock['a:ObjectID'] || sourceBlock['@_ObjectID'] || sourceBlock['ObjectID'] ||
-                 (typeof sourceBlock === 'string' ? sourceBlock : '');
+    if (objRef) {
+      if (typeof objRef === 'string') {
+        objectId = objRef;
+      } else if (typeof objRef === 'object') {
+        // 深度提取ID：处理嵌套结构如 { 'o:Table': { '@_Ref': 'o12' } }
+        objectId = this.extractIdFromNestedObject(objRef);
+
+        // 如果没有从对象中找到，尝试直接使用对象本身（可能已经是ID）
+        if (!objectId && objRef['@_Id']) {
+          objectId = objRef['@_Id'];
+        }
+      }
     }
 
-    const rect = tsXml['a:Rect'] || tsXml['Rect'];
+    // 如果c:Object失败，尝试sourceBlockID
+    if (!objectId) {
+      const sourceBlock = tsXml['a:SourceBlockID'] || tsXml['SourceBlockID'] || tsXml['@_SourceBlockID'] || tsXml['c:SourceBlockID'];
+      if (sourceBlock) {
+        if (typeof sourceBlock === 'string') {
+          objectId = sourceBlock;
+        } else if (typeof sourceBlock === 'object') {
+          objectId = sourceBlock['a:ObjectID'] || sourceBlock['@_ObjectID'] || sourceBlock['ObjectID'] ||
+                    sourceBlock['@_Ref'] || sourceBlock['Ref'] || '';
+        }
+      }
+    }
+
+    // 尝试TableID
+    if (!objectId) {
+      objectId = tsXml['a:TableID'] || tsXml['TableID'] || tsXml['@_TableID'] || '';
+    }
+
+    // 如果仍然没有找到，尝试将@_Id作为objectId（可能符号ID和对象ID相同）
+    if (!objectId && tsXml['@_Id']) {
+      objectId = tsXml['@_Id'];
+    }
+
+    if (!objectId) {
+      return null;
+    }
+
+    // 解析矩形坐标
+    const rect = tsXml['a:Rect'] || tsXml['Rect'] || tsXml['@_Rect'] || tsXml['c:Rect'];
     let left = 0, top = 0, right = 0, bottom = 0;
 
     if (rect) {
-      left = this.parseNumber(rect['a:Left'] || rect['Left'] || 0);
-      top = this.parseNumber(rect['a:Top'] || rect['Top'] || 0);
-      right = this.parseNumber(rect['a:Right'] || rect['Right'] || 0);
-      bottom = this.parseNumber(rect['a:Bottom'] || rect['Bottom'] || 0);
+      if (typeof rect === 'object') {
+        left = this.parseNumber(rect['a:Left'] || rect['Left'] || rect['@_Left'] || 0);
+        top = this.parseNumber(rect['a:Top'] || rect['Top'] || rect['@_Top'] || 0);
+        right = this.parseNumber(rect['a:Right'] || rect['Right'] || rect['@_Right'] || 0);
+        bottom = this.parseNumber(rect['a:Bottom'] || rect['Bottom'] || rect['@_Bottom'] || 0);
+      } else if (typeof rect === 'string') {
+        // 可能格式为 "L;T;R;B" 或 "((left,top), (right,bottom))"
+        if (rect.includes(';')) {
+          const parts = rect.split(';');
+          if (parts.length >= 4) {
+            left = this.parseNumber(parts[0]);
+            top = this.parseNumber(parts[1]);
+            right = this.parseNumber(parts[2]);
+            bottom = this.parseNumber(parts[3]);
+          }
+        } else if (rect.startsWith('((') && rect.includes('), (')) {
+          // 格式：((left,top), (right,bottom))
+          try {
+            const cleanRect = rect.replace(/[()\s]/g, '');
+            const parts = cleanRect.split(',');
+            if (parts.length >= 4) {
+              left = this.parseNumber(parts[0]);
+              top = this.parseNumber(parts[1]);
+              right = this.parseNumber(parts[2]);
+              bottom = this.parseNumber(parts[3]);
+            }
+          } catch (_e) {
+            // 忽略解析错误
+          }
+        }
+      }
     }
 
-    if (!objectId) return null;
+    // 如果objectId是短格式ID，尝试转换为对应的表GUID
+    if (this.idMap.has(objectId)) {
+      objectId = this.idMap.get(objectId)!;
+    }
 
-    return { id, objectId, rect: { left, top, right, bottom } };
+    return { id: id || `symbol_${objectId}`, objectId, rect: { left, top, right, bottom } };
   }
 
   private parseReferenceSymbol(rsXml: any): PDMReferenceSymbol | null {
-    const id = rsXml['a:ObjectID'] || rsXml['@_ObjectID'] || rsXml['ObjectID'] || '';
+    // 尝试所有可能的ID字段
+    const id = rsXml['a:ObjectID'] || rsXml['@_ObjectID'] || rsXml['ObjectID'] || rsXml['@_Id'] || '';
 
-    const refIdNode = rsXml['a:ReferenceID'] || rsXml['ReferenceID'];
+    // 1. 首先尝试从 c:Object 获取关联的reference ID
     let referenceId = '';
-    if (refIdNode) {
-      referenceId = refIdNode['a:ObjectID'] || refIdNode['@_ObjectID'] || refIdNode['ObjectID'] ||
-                   (typeof refIdNode === 'string' ? refIdNode : '');
+    const objRef = rsXml['c:Object'] || rsXml['Object'] || rsXml['a:Object'] || rsXml['@_Object'];
+
+    if (objRef) {
+      if (typeof objRef === 'string') {
+        referenceId = objRef;
+      } else if (typeof objRef === 'object') {
+        // 尝试从对象引用中提取ID
+        referenceId = objRef['a:ObjectID'] || objRef['@_ObjectID'] || objRef['ObjectID'] ||
+                     objRef['@_Ref'] || objRef['Ref'] ||
+                     objRef['@_Id'] || objRef['a:Id'] || '';
+
+        // 如果没有找到，尝试深度搜索嵌套结构
+        if (!referenceId) {
+          for (const key of Object.keys(objRef)) {
+            const value = objRef[key];
+            if (value && typeof value === 'object') {
+              if (key.includes('Reference') || key.includes('Ref')) {
+                const deepId = this.extractIdFromNestedObject(value);
+                if (deepId) {
+                  referenceId = deepId;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
-    const sourceSymbol = rsXml['a:SourceSymbol'] || rsXml['SourceSymbol'];
-    const destSymbol = rsXml['a:DestinationSymbol'] || rsXml['DestinationSymbol'];
+    // 2. 如果没有，尝试其他可能的reference ID字段
+    if (!referenceId) {
+      const refIdNode = rsXml['a:ReferenceID'] || rsXml['ReferenceID'] || rsXml['@_ReferenceID'] || rsXml['c:ReferenceID'];
+      if (refIdNode) {
+        if (typeof refIdNode === 'string') {
+          referenceId = refIdNode;
+        } else if (typeof refIdNode === 'object') {
+          referenceId = refIdNode['a:ObjectID'] || refIdNode['@_ObjectID'] || refIdNode['ObjectID'] ||
+                       refIdNode['@_Ref'] || refIdNode['Ref'] || '';
+        }
+      }
+    }
 
+    // 将referenceId从短格式ID转换为GUID（如果idMap中有映射）
+    if (referenceId && this.idMap.has(referenceId)) {
+      referenceId = this.idMap.get(referenceId)!;
+    }
+
+    // 3. 解析源和目标符号 - 重点关注 c:SourceSymbol 和 c:DestinationSymbol
     let sourceSymbolId = '';
     let destSymbolId = '';
+    
+    const sourceSymbol = rsXml['c:SourceSymbol'] || rsXml['SourceSymbol'] || rsXml['a:SourceSymbol'] || rsXml['@_SourceSymbol'];
+    const destSymbol = rsXml['c:DestinationSymbol'] || rsXml['DestinationSymbol'] || rsXml['a:DestinationSymbol'] || rsXml['@_DestinationSymbol'];
 
+    // 深入解析sourceSymbol
     if (sourceSymbol) {
-      sourceSymbolId = sourceSymbol['a:ObjectID'] || sourceSymbol['@_ObjectID'] || sourceSymbol['ObjectID'] ||
-                       (typeof sourceSymbol === 'string' ? sourceSymbol : '');
+      if (typeof sourceSymbol === 'string') {
+        sourceSymbolId = sourceSymbol;
+      } else if (sourceSymbol && typeof sourceSymbol === 'object') {
+        // 可能是一个对象引用，需要深入提取
+        sourceSymbolId = this.extractIdFromObjectRef(sourceSymbol);
+
+        // 如果还没有找到，尝试常见的嵌套结构
+        if (!sourceSymbolId) {
+          // 可能包含 o:TableSymbol 或其他嵌套
+          for (const key of Object.keys(sourceSymbol)) {
+            if (key.includes('Symbol') || key.includes('Table')) {
+              const nested = sourceSymbol[key];
+              if (nested && typeof nested === 'object') {
+                const nestedId = this.extractIdFromObjectRef(nested);
+                if (nestedId) {
+                  sourceSymbolId = nestedId;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
+    // 深入解析destSymbol
     if (destSymbol) {
-      destSymbolId = destSymbol['a:ObjectID'] || destSymbol['@_ObjectID'] || destSymbol['ObjectID'] ||
-                     (typeof destSymbol === 'string' ? destSymbol : '');
+      if (typeof destSymbol === 'string') {
+        destSymbolId = destSymbol;
+      } else if (destSymbol && typeof destSymbol === 'object') {
+        destSymbolId = this.extractIdFromObjectRef(destSymbol);
+
+        if (!destSymbolId) {
+          for (const key of Object.keys(destSymbol)) {
+            if (key.includes('Symbol') || key.includes('Table')) {
+              const nested = destSymbol[key];
+              if (nested && typeof nested === 'object') {
+                const nestedId = this.extractIdFromObjectRef(nested);
+                if (nestedId) {
+                  destSymbolId = nestedId;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
-    const sourceAttach = rsXml['a:SourceBorderAttach'] || rsXml['SourceBorderAttach'];
-    const destAttach = rsXml['a:DestinationBorderAttach'] || rsXml['DestinationBorderAttach'];
+    // 4. 如果没有找到，尝试ID后缀的属性
+    if (!sourceSymbolId) {
+      sourceSymbolId = rsXml['a:SourceSymbolID'] || rsXml['SourceSymbolID'] || rsXml['@_SourceSymbolID'] || 
+                      rsXml['c:SourceSymbolID'] || '';
+    }
+    if (!destSymbolId) {
+      destSymbolId = rsXml['a:DestinationSymbolID'] || rsXml['DestinationSymbolID'] || rsXml['@_DestinationSymbolID'] ||
+                    rsXml['c:DestinationSymbolID'] || '';
+    }
 
-    const sourceAnchor = sourceAttach ? this.parseNumber(sourceAttach['a:Anchor'] || sourceAttach['Anchor'] || 0) : 0;
-    const destAnchor = destAttach ? this.parseNumber(destAttach['a:Anchor'] || destAttach['Anchor'] || 0) : 0;
+    // 5. 如果仍然没有，尝试将@_Id作为symbol ID（可能符号ID就是@_Id值）
+    if (!sourceSymbolId || !destSymbolId) {
+      // 无法提取源/目标符号ID
+    }
 
-    if (!sourceSymbolId || !destSymbolId) return null;
+    // 解析锚点位置
+    const sourceAttach = rsXml['a:SourceBorderAttach'] || rsXml['SourceBorderAttach'] || rsXml['@_SourceBorderAttach'];
+    const destAttach = rsXml['a:DestinationBorderAttach'] || rsXml['DestinationBorderAttach'] || rsXml['@_DestinationBorderAttach'];
 
-    return { id, referenceId, sourceSymbolId, destSymbolId, sourceAnchor, destAnchor };
+    const sourceAnchor = sourceAttach ? this.parseNumber(sourceAttach['a:Anchor'] || sourceAttach['Anchor'] || sourceAttach || 0) : 0;
+    const destAnchor = destAttach ? this.parseNumber(destAttach['a:Anchor'] || destAttach['Anchor'] || destAttach || 0) : 0;
+
+    // 即使没有source/dest，也返回部分信息（可能稍后可以通过其他方式匹配）
+    if (!sourceSymbolId || !destSymbolId) {
+      return null;
+    }
+
+    return {
+      id: id || `refsym_${referenceId || 'unknown'}`,
+      referenceId,
+      sourceSymbolId,
+      destSymbolId,
+      sourceAnchor,
+      destAnchor
+    };
+  }
+
+  // 辅助方法：从对象引用中提取ID
+  private extractIdFromObjectRef(objRef: any): string {
+    if (!objRef) return '';
+    
+    if (typeof objRef === 'string') {
+      return objRef;
+    }
+    
+    if (typeof objRef === 'object') {
+      // 尝试所有可能的ID字段
+      return objRef['a:ObjectID'] || objRef['@_ObjectID'] || objRef['ObjectID'] ||
+             objRef['@_Ref'] || objRef['Ref'] || 
+             objRef['@_Id'] || objRef['a:Id'] || objRef['Id'] ||
+             objRef['@_ID'] || objRef['a:ID'] || objRef['ID'] || '';
+    }
+    
+    return '';
+  }
+
+  private extractIdFromNestedObject(obj: any): string {
+    if (!obj || typeof obj !== 'object') return '';
+
+    // 首先尝试直接提取
+    const directId = this.extractIdFromObjectRef(obj);
+    if (directId) {
+      return directId;
+    }
+
+    // 深度搜索嵌套对象中的ID
+    for (const key of Object.keys(obj)) {
+      const value = obj[key];
+
+      if (value && typeof value === 'object') {
+        // 如果键名包含"Table"、"Symbol"、"Object"等，深入搜索
+        if (key.includes('Table') || key.includes('Symbol') || key.includes('Object') || key.includes('Reference')) {
+          const nestedId = this.extractIdFromObjectRef(value);
+          if (nestedId) {
+            return nestedId;
+          }
+
+          // 进一步深入嵌套
+          const deepNestedId = this.extractIdFromNestedObject(value);
+          if (deepNestedId) {
+            return deepNestedId;
+          }
+        }
+      }
+    }
+
+    return '';
   }
 }

@@ -56,8 +56,8 @@ export function registerIPCHandlers(mainWindow: BrowserWindow) {
     return currentFilePath;
   });
 
-  // 调试：返回原始解析结果
-  ipcMain.handle('pdm:parseDebug', async (_event, filePath?: string): Promise<any> => {
+  // 调试：检查 PDM 文件中的 References 结构
+  ipcMain.handle('pdm:checkReferences', async (_event, filePath?: string): Promise<any> => {
     const targetPath = filePath || currentFilePath;
 
     if (!targetPath) {
@@ -66,11 +66,16 @@ export function registerIPCHandlers(mainWindow: BrowserWindow) {
 
     try {
       const content = await fs.readFile(targetPath, 'utf-8');
-      // 使用同一个 parser 实例解析
-      const data = parser.parse(content);
-      return data;
+      const result = parser.parse(content);
+
+      return {
+        referencesCount: result.references?.length || 0,
+        references: result.references || [],
+        hasDiagram: !!result.diagram,
+        diagramReferencesCount: result.diagram?.references?.length || 0
+      };
     } catch (error) {
-      console.error('Error parsing PDM file for debug:', error);
+      console.error('Error checking references:', error);
       throw error;
     }
   });

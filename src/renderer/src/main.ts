@@ -1,6 +1,6 @@
 import { TreeView, TreeNodeData } from './components/TreeView';
 import { DetailPanel, PDMTable, PDMColumn, PDMKey } from './components/DetailPanel';
-import { ERDiagram } from './components/ERDiagram';
+import { ERDiagram, PDMReference } from './components/ERDiagram';
 
 // 全局变量
 let treeView: TreeView;
@@ -14,7 +14,23 @@ document.addEventListener('DOMContentLoaded', () => {
   initComponents();
   initEventListeners();
   initMenuListeners();
+  initTextSelection();
 });
+
+// 启用文字选择
+function initTextSelection() {
+  const detailContainer = document.getElementById('detail-container');
+  if (detailContainer) {
+    detailContainer.addEventListener('mousedown', (e) => {
+      // 允许文字选择
+      e.stopPropagation();
+    });
+
+    // 设置全局文字选择样式
+    document.body.style.userSelect = 'text';
+    document.body.style.webkitUserSelect = 'text';
+  }
+}
 
 // 初始化组件
 function initComponents() {
@@ -59,9 +75,12 @@ function initEventListeners() {
   const tabDetail = document.getElementById('tab-detail');
   const tabEr = document.getElementById('tab-er');
 
+  const btnCheck = document.getElementById('btn-check');
+
   btnOpen?.addEventListener('click', openFile);
   btnExpand?.addEventListener('click', () => treeView.expandAll());
   btnCollapse?.addEventListener('click', () => treeView.collapseAll());
+  btnCheck?.addEventListener('click', checkReferences);
 
   // 标签页切换
   tabDetail?.addEventListener('click', () => switchTab('detail'));
@@ -144,8 +163,6 @@ async function loadPDM(filePath: string) {
       return;
     }
 
-    console.log('Parsed PDM data:', data);
-
     if (!data.tables || data.tables.length === 0) {
       updateStatus('未找到表');
       return;
@@ -159,14 +176,16 @@ async function loadPDM(filePath: string) {
     // 渲染树
     treeView.render(treeData);
 
-    // 设置 ER 图数据
-    erDiagram.setData(data.diagram, data.tables);
+    // 设置 ER 图数据（包含外键关系）
+    erDiagram.setData(data.diagram, data.tables, data.references);
 
     // 启用按钮
     const btnExpand = document.getElementById('btn-expand') as HTMLButtonElement;
     const btnCollapse = document.getElementById('btn-collapse') as HTMLButtonElement;
+    const btnCheck = document.getElementById('btn-check') as HTMLButtonElement;
     if (btnExpand) btnExpand.disabled = false;
     if (btnCollapse) btnCollapse.disabled = false;
+    if (btnCheck) btnCheck.disabled = false;
 
     updateStatus(`已加载 ${data.tables.length} 个表`);
   } catch (error) {
@@ -255,6 +274,24 @@ function updateStatus(text: string) {
   }
 }
 
+// 检查外键关系
+async function checkReferences() {
+  if (!window.electronAPI) return;
+
+  try {
+    const result = await window.electronAPI.checkReferences();
+
+    if (result) {
+      alert(`外键检查结果:\n` +
+            `References 数量: ${result.referencesCount}\n` +
+            `Diagram 中的 References: ${result.diagramReferencesCount}\n` +
+            `是否有 Diagram: ${result.hasDiagram ? '是' : '否'}`);
+    }
+  } catch (error) {
+    console.error('Error checking references:', error);
+  }
+}
+
 // 类型声明
 declare global {
   interface Window {
@@ -262,7 +299,7 @@ declare global {
       openFile: () => Promise<string | null>;
       parsePDM: (filePath?: string) => Promise<any>;
       getCurrentFile: () => Promise<string | null>;
-      parseDebug: () => Promise<any>;
+      checkReferences: () => Promise<any>;
       onFileOpened: (callback: (data: { filePath: string; fileName: string }) => void) => void;
       onMenuOpenFile: (callback: () => void) => void;
       onExpandAll: (callback: () => void) => void;
