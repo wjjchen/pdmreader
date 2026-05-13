@@ -45,6 +45,9 @@ export interface PDMTable {
   code: string;
   comment?: string;
   columns: PDMColumn[];
+  primaryKey?: {
+    columnRefs: string[];
+  };
 }
 
 export interface PDMColumn {
@@ -94,7 +97,7 @@ export class ERDiagram {
   private virtualHeight: number = 0;
 
   // 样式
-  private tableWidth: number = 180;
+  private tableWidth: number = 200;
   private tableHeaderHeight: number = 30;
   private columnHeight: number = 22;
   private padding: number = 8;
@@ -899,6 +902,7 @@ export class ERDiagram {
     ctx.fillText(displayName, left + width / 2, top + this.tableHeaderHeight / 2);
 
     // 列信息
+    const pkColumnRefs = new Set(table.primaryKey?.columnRefs || []);
     const visibleColumns = table.columns.slice(0, 8);
     visibleColumns.forEach((col, index) => {
       const colY = top + this.tableHeaderHeight + index * this.columnHeight + this.columnHeight / 2;
@@ -911,13 +915,27 @@ export class ERDiagram {
       ctx.lineTo(right, top + this.tableHeaderHeight + index * this.columnHeight);
       ctx.stroke();
 
-      ctx.fillStyle = '#333';
-      ctx.font = '11px sans-serif';
+      const isPK = pkColumnRefs.has(col.code) || pkColumnRefs.has(col.id);
+
+      // 主键图标
+      let textOffset = left + this.padding;
+      if (isPK) {
+        ctx.fillStyle = '#e6a700';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('PK', textOffset, colY);
+        textOffset += 18;
+      }
+
+      ctx.fillStyle = isPK ? '#1a1a1a' : '#333';
+      ctx.font = isPK ? 'bold 11px sans-serif' : '11px sans-serif';
       ctx.textAlign = 'left';
-      const colName = col.name.length > 12 ? col.name.substring(0, 12) + '...' : col.name;
-      ctx.fillText(colName, left + this.padding, colY);
+      const maxNameLen = isPK ? 9 : 12;
+      const colName = col.name.length > maxNameLen ? col.name.substring(0, maxNameLen) + '...' : col.name;
+      ctx.fillText(colName, textOffset, colY);
 
       ctx.fillStyle = '#666';
+      ctx.font = '11px sans-serif';
       ctx.textAlign = 'right';
       const dtype = col.dataType + (col.length ? `(${col.length})` : '');
       const dtypeDisplay = dtype.length > 10 ? dtype.substring(0, 10) + '...' : dtype;
